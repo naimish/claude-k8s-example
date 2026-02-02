@@ -26,6 +26,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Helm
+        run: |
+          if ! command -v helm &> /dev/null; then
+            echo "Installing Helm..."
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+            echo "Helm installed successfully!"
+          else
+            echo "Helm already installed: $(helm version --short)"
+          fi
+
       - name: Verify cluster access
         run: |
           kubectl cluster-info
