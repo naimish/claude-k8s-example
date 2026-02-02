@@ -1,7 +1,7 @@
 # Global configuration
 global:
   environment: dev
-  imageRegistry: ghcr.io/YOUR_ORG
+  imageRegistry: ghcr.io/naimish
   featureFlags:
     newUIEnabled: false
     betaFeaturesEnabled: false
