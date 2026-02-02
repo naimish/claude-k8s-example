@@ -139,10 +139,6 @@ apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
 - role: control-plane
   extraPortMappings:
-  # API server
-  - containerPort: 6443
-    hostPort: 6443
-    protocol: TCP
   # HTTP
   - containerPort: 80
     hostPort: 8080
@@ -161,9 +157,6 @@ nodes:
   - containerPort: 30002
     hostPort: 30002
     protocol: TCP
-networking:
-  apiServerAddress: "127.0.0.1"
-  apiServerPort: 6443
 EOF
 
     # Create cluster
