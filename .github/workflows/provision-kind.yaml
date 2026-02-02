@@ -98,14 +98,57 @@ jobs:
           echo "kubectl installed successfully!"
           kubectl version --client
 
+      - name: Check for port conflicts
+        id: check-ports
+        run: |
+          echo "Checking for port conflicts..."
+          echo ""
+          echo "Port 6443 (Kubernetes API):"
+          lsof -i :6443 || echo "  Port 6443 is free"
+          echo ""
+          echo "Port 8080 (HTTP):"
+          lsof -i :8080 || echo "  Port 8080 is free"
+          echo ""
+          echo "Existing kind clusters:"
+          kind get clusters || echo "  No kind clusters found"
+          echo ""
+          echo "Docker containers with kind:"
+          docker ps --filter "name=kind" || echo "  No kind containers running"
+
       - name: Check if cluster exists
         id: check-cluster
         run: |
-          if kind get clusters | grep -q "^${{ inputs.cluster_name }}$"; then
+          if kind get clusters 2>/dev/null | grep -q "^${{ inputs.cluster_name }}$"; then
             echo "exists=true" >> $GITHUB_OUTPUT
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Clean up conflicting resources
+        if: ${{ inputs.action == 'install' }}
+        run: |
+          echo "Cleaning up any conflicting resources..."
+
+          # Delete all existing kind clusters
+          for cluster in $(kind get clusters 2>/dev/null || echo ""); do
+            if [ -n "$cluster" ]; then
+              echo "Deleting existing cluster: $cluster"
+              kind delete cluster --name $cluster
+            fi
+          done
+
+          # Stop any remaining kind containers
+          for container in $(docker ps -a --filter "name=kind" --format "{{.Names}}" || echo ""); do
+            if [ -n "$container" ]; then
+              echo "Removing container: $container"
+              docker rm -f $container
+            fi
+          done
+
+          # Wait a moment for ports to be released
+          sleep 2
+
+          echo "Cleanup complete!"
 
       - name: Display current status
         run: |
@@ -114,13 +157,6 @@ jobs:
           echo "kubectl installed: ${{ steps.check-kubectl.outputs.installed }}"
           echo "Cluster exists: ${{ steps.check-cluster.outputs.exists }}"
           echo ""
-
-          if [ "${{ steps.check-cluster.outputs.exists }}" == "true" ]; then
-            echo "Existing clusters:"
-            kind get clusters
-            echo ""
-            kubectl cluster-info --context kind-${{ inputs.cluster_name }}
-          fi
 
       - name: Create kind cluster
         if: ${{ inputs.action == 'install' && steps.check-cluster.outputs.exists == 'false' }}
