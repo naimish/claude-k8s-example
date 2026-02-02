@@ -1,0 +1,324 @@
+name: Provision kind Cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - install
+          - delete
+          - recreate
+          - status
+        default: 'install'
+      cluster_name:
+        description: 'Cluster name'
+        required: false
+        default: 'dev-cluster'
+        type: string
+
+jobs:
+  provision-kind:
+    name: Provision kind on Self-Hosted Runner
+    runs-on: [self-hosted, dev]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check if Docker is running
+        run: |
+          if ! docker info > /dev/null 2>&1; then
+            echo "Error: Docker is not running"
+            echo "Please start Docker Desktop and try again"
+            exit 1
+          fi
+          echo "Docker is running ✓"
+          docker version
+
+      - name: Check if kind is installed
+        id: check-kind
+        run: |
+          if command -v kind &> /dev/null; then
+            echo "installed=true" >> $GITHUB_OUTPUT
+            echo "version=$(kind version)" >> $GITHUB_OUTPUT
+          else
+            echo "installed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install kind
+        if: steps.check-kind.outputs.installed == 'false'
+        run: |
+          echo "Installing kind..."
+
+          # Detect architecture
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "x86_64" ]; then
+            ARCH="amd64"
+          elif [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+            ARCH="arm64"
+          fi
+
+          # Download kind binary
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-darwin-${ARCH}
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+          echo "kind installed successfully!"
+          kind version
+
+      - name: Check if kubectl is installed
+        id: check-kubectl
+        run: |
+          if command -v kubectl &> /dev/null; then
+            echo "installed=true" >> $GITHUB_OUTPUT
+          else
+            echo "installed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install kubectl
+        if: steps.check-kubectl.outputs.installed == 'false'
+        run: |
+          echo "Installing kubectl..."
+
+          # Detect architecture
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "x86_64" ]; then
+            ARCH="amd64"
+          elif [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+            ARCH="arm64"
+          fi
+
+          # Download kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/${ARCH}/kubectl"
+          chmod +x ./kubectl
+          sudo mv ./kubectl /usr/local/bin/kubectl
+
+          echo "kubectl installed successfully!"
+          kubectl version --client
+
+      - name: Check if cluster exists
+        id: check-cluster
+        run: |
+          if kind get clusters | grep -q "^${{ inputs.cluster_name }}$"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Display current status
+        run: |
+          echo "=== Current Status ==="
+          echo "kind installed: ${{ steps.check-kind.outputs.installed }}"
+          echo "kubectl installed: ${{ steps.check-kubectl.outputs.installed }}"
+          echo "Cluster exists: ${{ steps.check-cluster.outputs.exists }}"
+          echo ""
+
+          if [ "${{ steps.check-cluster.outputs.exists }}" == "true" ]; then
+            echo "Existing clusters:"
+            kind get clusters
+            echo ""
+            kubectl cluster-info --context kind-${{ inputs.cluster_name }}
+          fi
+
+      - name: Create kind cluster
+        if: ${{ inputs.action == 'install' && steps.check-cluster.outputs.exists == 'false' }}
+        run: |
+          echo "Creating kind cluster: ${{ inputs.cluster_name }}"
+
+          # Create cluster config
+          cat <<EOF > kind-config.yaml
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+          - role: control-plane
+            extraPortMappings:
+            # API server
+            - containerPort: 6443
+              hostPort: 6443
+              protocol: TCP
+            # HTTP
+            - containerPort: 80
+              hostPort: 8080
+              protocol: TCP
+            # HTTPS
+            - containerPort: 443
+              hostPort: 8443
+              protocol: TCP
+            # NodePort range
+            - containerPort: 30000
+              hostPort: 30000
+              protocol: TCP
+            - containerPort: 30001
+              hostPort: 30001
+              protocol: TCP
+            - containerPort: 30002
+              hostPort: 30002
+              protocol: TCP
+          networking:
+            apiServerAddress: "127.0.0.1"
+            apiServerPort: 6443
+          EOF
+
+          # Create cluster
+          kind create cluster \
+            --name ${{ inputs.cluster_name }} \
+            --config kind-config.yaml \
+            --wait 60s
+
+          echo "Cluster created successfully!"
+
+          # Set kubectl context
+          kubectl cluster-info --context kind-${{ inputs.cluster_name }}
+
+      - name: Install NGINX Ingress Controller
+        if: ${{ inputs.action == 'install' && steps.check-cluster.outputs.exists == 'false' }}
+        run: |
+          echo "Installing NGINX Ingress Controller..."
+
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+
+          echo "Waiting for ingress controller to be ready..."
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=120s
+
+          echo "NGINX Ingress Controller installed!"
+
+      - name: Create namespaces
+        if: ${{ inputs.action == 'install' || inputs.action == 'recreate' }}
+        run: |
+          echo "Creating namespaces..."
+          kubectl create namespace dev --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "Namespaces created:"
+          kubectl get namespaces
+
+      - name: Configure registry access
+        if: ${{ inputs.action == 'install' || inputs.action == 'recreate' }}
+        run: |
+          echo "Configuring registry credentials..."
+
+          kubectl create secret docker-registry ghcr-secret \
+            --docker-server=ghcr.io \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GITHUB_TOKEN }} \
+            --namespace=dev \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "Registry credentials configured!"
+
+      - name: Load local images (if any)
+        if: ${{ inputs.action == 'install' || inputs.action == 'recreate' }}
+        continue-on-error: true
+        run: |
+          echo "Loading Docker images into kind cluster..."
+
+          # Try to load recent images from local Docker
+          for service in api-service worker-service web-frontend; do
+            if docker image inspect ghcr.io/${{ github.repository_owner }}/${service}:main-latest &> /dev/null; then
+              echo "Loading ${service}..."
+              kind load docker-image ghcr.io/${{ github.repository_owner }}/${service}:main-latest \
+                --name ${{ inputs.cluster_name }}
+            fi
+          done
+
+          echo "Image loading complete (if any were available)"
+
+      - name: Delete cluster
+        if: ${{ inputs.action == 'delete' && steps.check-cluster.outputs.exists == 'true' }}
+        run: |
+          echo "Deleting kind cluster: ${{ inputs.cluster_name }}"
+          kind delete cluster --name ${{ inputs.cluster_name }}
+          echo "Cluster deleted successfully!"
+
+      - name: Recreate cluster
+        if: ${{ inputs.action == 'recreate' }}
+        run: |
+          if [ "${{ steps.check-cluster.outputs.exists }}" == "true" ]; then
+            echo "Deleting existing cluster..."
+            kind delete cluster --name ${{ inputs.cluster_name }}
+          fi
+
+          echo "This will trigger a new install..."
+          echo "Please run the workflow again with action: install"
+
+      - name: Display cluster status
+        if: ${{ inputs.action == 'status' }}
+        run: |
+          echo "=== kind Cluster Status ==="
+          echo ""
+
+          echo "Clusters:"
+          kind get clusters
+          echo ""
+
+          if [ "${{ steps.check-cluster.outputs.exists }}" == "true" ]; then
+            echo "Cluster Info:"
+            kubectl cluster-info --context kind-${{ inputs.cluster_name }}
+            echo ""
+
+            echo "Nodes:"
+            kubectl get nodes -o wide
+            echo ""
+
+            echo "Namespaces:"
+            kubectl get namespaces
+            echo ""
+
+            echo "Pods (all namespaces):"
+            kubectl get pods -A
+            echo ""
+
+            echo "Services in dev namespace:"
+            kubectl get services -n dev || echo "No services in dev namespace"
+            echo ""
+
+            echo "Docker containers for kind:"
+            docker ps --filter "name=${{ inputs.cluster_name }}"
+          else
+            echo "Cluster ${{ inputs.cluster_name }} does not exist"
+          fi
+
+      - name: Export kubeconfig
+        if: ${{ inputs.action == 'install' && steps.check-cluster.outputs.exists == 'false' }}
+        run: |
+          echo "Kubeconfig is automatically configured by kind"
+          echo "Context name: kind-${{ inputs.cluster_name }}"
+          echo ""
+          echo "Current context:"
+          kubectl config current-context
+          echo ""
+          echo "Available contexts:"
+          kubectl config get-contexts
+
+      - name: Post-installation summary
+        if: ${{ inputs.action == 'install' && steps.check-cluster.outputs.exists == 'false' }}
+        run: |
+          echo "### kind Cluster Provisioned Successfully! 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Cluster Information:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Cluster Name: ${{ inputs.cluster_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Context: kind-${{ inputs.cluster_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- API Server: https://127.0.0.1:6443" >> $GITHUB_STEP_SUMMARY
+          echo "- Namespaces: dev, monitoring, default, kube-system" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Port Mappings:**" >> $GITHUB_STEP_SUMMARY
+          echo "- HTTP: localhost:8080 → cluster:80" >> $GITHUB_STEP_SUMMARY
+          echo "- HTTPS: localhost:8443 → cluster:443" >> $GITHUB_STEP_SUMMARY
+          echo "- NodePorts: 30000-30002 mapped" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**What's Next:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Deploy applications: \`kubectl apply -f deployment.yaml\`" >> $GITHUB_STEP_SUMMARY
+          echo "2. Access services via localhost:8080" >> $GITHUB_STEP_SUMMARY
+          echo "3. View cluster: \`kubectl get all -n dev\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Useful Commands:**" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "kubectl config use-context kind-${{ inputs.cluster_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "kubectl get pods -n dev" >> $GITHUB_STEP_SUMMARY
+          echo "kind load docker-image <image:tag> --name ${{ inputs.cluster_name }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
