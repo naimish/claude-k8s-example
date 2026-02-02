@@ -1,0 +1,199 @@
+name: Provision K3s Cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - install
+          - upgrade
+          - uninstall
+          - status
+        default: 'install'
+
+jobs:
+  provision-k3s:
+    name: Provision K3s on Self-Hosted Runner
+    runs-on: [self-hosted, dev]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check if k3s is already installed
+        id: check-k3s
+        run: |
+          if command -v k3s &> /dev/null; then
+            echo "installed=true" >> $GITHUB_OUTPUT
+            echo "version=$(k3s --version | head -n1)" >> $GITHUB_OUTPUT
+          else
+            echo "installed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Display current status
+        run: |
+          echo "K3s installed: ${{ steps.check-k3s.outputs.installed }}"
+          if [ "${{ steps.check-k3s.outputs.installed }}" == "true" ]; then
+            echo "K3s version: ${{ steps.check-k3s.outputs.version }}"
+            echo ""
+            echo "Cluster status:"
+            kubectl get nodes
+            kubectl get namespaces
+          fi
+
+      - name: Install k3s
+        if: ${{ inputs.action == 'install' && steps.check-k3s.outputs.installed == 'false' }}
+        run: |
+          echo "Installing k3s..."
+
+          # Install k3s with default settings
+          curl -sfL https://get.k3s.io | sh -s - \
+            --write-kubeconfig-mode 644 \
+            --disable traefik \
+            --disable servicelb
+
+          echo "Waiting for k3s to be ready..."
+          sleep 10
+
+          # Verify installation
+          sudo k3s kubectl get nodes
+
+          echo "K3s installed successfully!"
+
+      - name: Configure kubectl for runner user
+        if: ${{ inputs.action == 'install' && steps.check-k3s.outputs.installed == 'false' }}
+        run: |
+          mkdir -p ~/.kube
+          sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+          sudo chown $(id -u):$(id -g) ~/.kube/config
+          chmod 600 ~/.kube/config
+
+          # Test kubectl access
+          kubectl get nodes
+          echo "kubectl configured successfully!"
+
+      - name: Set up namespaces
+        if: ${{ inputs.action == 'install' }}
+        run: |
+          echo "Creating namespaces..."
+          kubectl create namespace dev --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "Namespaces created:"
+          kubectl get namespaces
+
+      - name: Install NGINX Ingress Controller
+        if: ${{ inputs.action == 'install' }}
+        run: |
+          echo "Installing NGINX Ingress Controller..."
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.2/deploy/static/provider/baremetal/deploy.yaml
+
+          echo "Waiting for ingress controller to be ready..."
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=120s
+
+          echo "NGINX Ingress Controller installed!"
+
+      - name: Configure local container registry access
+        if: ${{ inputs.action == 'install' }}
+        run: |
+          echo "Configuring registry credentials for k3s..."
+
+          # Create registry credentials secret
+          kubectl create secret docker-registry ghcr-secret \
+            --docker-server=ghcr.io \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GITHUB_TOKEN }} \
+            --namespace=dev \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "Registry credentials configured!"
+
+      - name: Upgrade k3s
+        if: ${{ inputs.action == 'upgrade' && steps.check-k3s.outputs.installed == 'true' }}
+        run: |
+          echo "Upgrading k3s..."
+          curl -sfL https://get.k3s.io | sh -s - \
+            --write-kubeconfig-mode 644 \
+            --disable traefik \
+            --disable servicelb
+
+          echo "Waiting for upgrade to complete..."
+          sleep 15
+
+          kubectl get nodes
+          echo "K3s upgraded successfully!"
+
+      - name: Uninstall k3s
+        if: ${{ inputs.action == 'uninstall' && steps.check-k3s.outputs.installed == 'true' }}
+        run: |
+          echo "Uninstalling k3s..."
+          echo "WARNING: This will destroy all data in the cluster!"
+
+          # Run k3s uninstall script
+          if [ -f /usr/local/bin/k3s-uninstall.sh ]; then
+            sudo /usr/local/bin/k3s-uninstall.sh
+            echo "K3s uninstalled successfully!"
+          else
+            echo "Uninstall script not found!"
+            exit 1
+          fi
+
+      - name: Display cluster status
+        if: ${{ inputs.action == 'status' && steps.check-k3s.outputs.installed == 'true' }}
+        run: |
+          echo "=== K3s Cluster Status ==="
+          echo ""
+
+          echo "Version:"
+          k3s --version | head -n1
+          echo ""
+
+          echo "Nodes:"
+          kubectl get nodes -o wide
+          echo ""
+
+          echo "Namespaces:"
+          kubectl get namespaces
+          echo ""
+
+          echo "Pods in dev namespace:"
+          kubectl get pods -n dev -o wide || echo "No pods in dev namespace"
+          echo ""
+
+          echo "Services in dev namespace:"
+          kubectl get services -n dev || echo "No services in dev namespace"
+          echo ""
+
+          echo "Ingresses:"
+          kubectl get ingress -A || echo "No ingresses configured"
+          echo ""
+
+          echo "Cluster resources:"
+          kubectl top nodes || echo "Metrics server not available"
+
+      - name: Post-installation summary
+        if: ${{ inputs.action == 'install' && steps.check-k3s.outputs.installed == 'false' }}
+        run: |
+          echo "### K3s Cluster Provisioned Successfully! 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Cluster Information:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Node: $(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')" >> $GITHUB_STEP_SUMMARY
+          echo "- Kubernetes Version: $(kubectl version --short | grep Server | cut -d' ' -f3)" >> $GITHUB_STEP_SUMMARY
+          echo "- Namespaces: dev, monitoring, default, kube-system" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**What's Next:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Deploy your applications to the dev namespace" >> $GITHUB_STEP_SUMMARY
+          echo "2. Access services via NodePort or configure Ingress" >> $GITHUB_STEP_SUMMARY
+          echo "3. Monitor cluster with \`kubectl top nodes\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Useful Commands:**" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "kubectl get pods -n dev" >> $GITHUB_STEP_SUMMARY
+          echo "kubectl get services -n dev" >> $GITHUB_STEP_SUMMARY
+          echo "kubectl logs -n dev <pod-name>" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
