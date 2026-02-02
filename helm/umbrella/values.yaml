@@ -1,0 +1,120 @@
+# Global configuration
+global:
+  environment: dev
+  imageRegistry: ghcr.io/YOUR_ORG
+  featureFlags:
+    newUIEnabled: false
+    betaFeaturesEnabled: false
+
+# API Service Configuration
+api-service:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/YOUR_ORG/api-service
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  env:
+    - name: ENVIRONMENT
+      value: "dev"
+    - name: PORT
+      value: "8080"
+
+# Worker Service Configuration
+worker-service:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/YOUR_ORG/worker-service
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  env:
+    - name: ENVIRONMENT
+      value: "dev"
+    - name: PORT
+      value: "8080"
+    - name: JOB_INTERVAL
+      value: "30"
+
+# Web Frontend Configuration
+web-frontend:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/YOUR_ORG/web-frontend
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  env:
+    - name: ENVIRONMENT
+      value: "dev"
+    - name: PORT
+      value: "8080"
+    - name: API_SERVICE_URL
+      value: "http://api-service:80"
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8080
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: platform.example.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []

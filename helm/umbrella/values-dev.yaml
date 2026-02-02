@@ -1,0 +1,92 @@
+# Development environment overrides
+global:
+  environment: dev
+  imageRegistry: ghcr.io/YOUR_ORG
+  featureFlags:
+    newUIEnabled: false
+    betaFeaturesEnabled: false
+
+# API Service - Minimal resources for dev
+api-service:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    tag: "main-latest"
+    pullPolicy: Always
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  autoscaling:
+    enabled: false
+
+  env:
+    - name: ENVIRONMENT
+      value: "dev"
+    - name: PORT
+      value: "8080"
+
+# Worker Service - Minimal resources for dev
+worker-service:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    tag: "main-latest"
+    pullPolicy: Always
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  autoscaling:
+    enabled: false
+
+  env:
+    - name: ENVIRONMENT
+      value: "dev"
+    - name: PORT
+      value: "8080"
+    - name: JOB_INTERVAL
+      value: "60"  # Slower in dev to save resources
+
+# Web Frontend - Minimal resources for dev
+web-frontend:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    tag: "main-latest"
+    pullPolicy: Always
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  autoscaling:
+    enabled: false
+
+  env:
+    - name: ENVIRONMENT
+      value: "dev"
+    - name: PORT
+      value: "8080"
+    - name: API_SERVICE_URL
+      value: "http://microservices-platform-api-service:80"
+
+  ingress:
+    enabled: false

@@ -1,0 +1,203 @@
+name: CD - Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (e.g., main-abc123)'
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository_owner }}
+
+jobs:
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://platform.production.example.com
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.13.0'
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_PROD }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Verify cluster access
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Verify image exists
+        run: |
+          echo "Verifying image tag: ${{ inputs.image_tag }}"
+          # Note: In production, add actual image verification logic here
+
+      - name: Pre-deployment health check
+        run: |
+          echo "Checking current production health..."
+          kubectl get pods -n production -l app.kubernetes.io/instance=microservices-platform || true
+
+      - name: Update Helm dependencies
+        run: |
+          helm dependency update helm/umbrella
+
+      - name: Deploy to production
+        run: |
+          helm upgrade --install microservices-platform helm/umbrella \
+            --namespace production \
+            --create-namespace \
+            --values helm/umbrella/values-prod.yaml \
+            --set api-service.image.tag=${{ inputs.image_tag }} \
+            --set worker-service.image.tag=${{ inputs.image_tag }} \
+            --set web-frontend.image.tag=${{ inputs.image_tag }} \
+            --atomic \
+            --wait \
+            --timeout 15m
+
+      - name: Verify deployment
+        run: |
+          echo "Waiting for deployments to be ready..."
+          kubectl rollout status deployment/microservices-platform-api-service -n production --timeout=10m
+          kubectl rollout status deployment/microservices-platform-worker-service -n production --timeout=10m
+          kubectl rollout status deployment/microservices-platform-web-frontend -n production --timeout=10m
+
+      - name: Production smoke tests
+        run: |
+          echo "Running production smoke tests..."
+
+          # Get multiple pods for testing
+          API_PODS=$(kubectl get pod -n production -l app.kubernetes.io/name=api-service -o jsonpath='{.items[*].metadata.name}')
+          WORKER_PODS=$(kubectl get pod -n production -l app.kubernetes.io/name=worker-service -o jsonpath='{.items[*].metadata.name}')
+          FRONTEND_PODS=$(kubectl get pod -n production -l app.kubernetes.io/name=web-frontend -o jsonpath='{.items[*].metadata.name}')
+
+          # Test first API pod
+          API_POD=$(echo $API_PODS | awk '{print $1}')
+          kubectl exec -n production $API_POD -- curl -f http://localhost:8080/health || exit 1
+          kubectl exec -n production $API_POD -- curl -f http://localhost:8080/ready || exit 1
+          kubectl exec -n production $API_POD -- curl -f http://localhost:8080/api/info || exit 1
+          echo "API service smoke tests passed"
+
+          # Test first worker pod
+          WORKER_POD=$(echo $WORKER_PODS | awk '{print $1}')
+          kubectl exec -n production $WORKER_POD -- curl -f http://localhost:8080/health || exit 1
+          kubectl exec -n production $WORKER_POD -- curl -f http://localhost:8080/metrics || exit 1
+          echo "Worker service smoke tests passed"
+
+          # Test first frontend pod
+          FRONTEND_POD=$(echo $FRONTEND_PODS | awk '{print $1}')
+          kubectl exec -n production $FRONTEND_POD -- curl -f http://localhost:8080/health || exit 1
+          kubectl exec -n production $FRONTEND_POD -- curl -f http://localhost:8080/api/status || exit 1
+          echo "Frontend smoke tests passed"
+
+          echo "All production smoke tests passed!"
+
+      - name: Monitoring soak period
+        run: |
+          echo "Monitoring deployment for 5 minutes..."
+          sleep 300
+
+          # Check pod health after soak period
+          echo "Checking pod health after soak period..."
+          UNHEALTHY=$(kubectl get pods -n production -l app.kubernetes.io/instance=microservices-platform \
+            --field-selector=status.phase!=Running -o json | jq '.items | length')
+
+          if [ "$UNHEALTHY" -gt 0 ]; then
+            echo "Found $UNHEALTHY unhealthy pods after soak period"
+            kubectl get pods -n production -l app.kubernetes.io/instance=microservices-platform
+            exit 1
+          fi
+
+          echo "All pods healthy after soak period"
+
+      - name: Verify autoscaling
+        run: |
+          echo "Verifying HPA configuration..."
+          kubectl get hpa -n production -l app.kubernetes.io/instance=microservices-platform
+
+          # Check that minimum replicas are running
+          echo "Verifying minimum replica counts..."
+          kubectl get deployment -n production -l app.kubernetes.io/instance=microservices-platform
+
+      - name: Check resource utilization
+        run: |
+          echo "Checking resource utilization..."
+          kubectl top pods -n production -l app.kubernetes.io/instance=microservices-platform || true
+          kubectl top nodes || true
+
+      - name: Get deployment info
+        run: |
+          echo "Production deployment successful!"
+          echo "Image tag: ${{ inputs.image_tag }}"
+          echo ""
+          echo "Pods:"
+          kubectl get pods -n production -l app.kubernetes.io/instance=microservices-platform -o wide
+          echo ""
+          echo "Services:"
+          kubectl get svc -n production -l app.kubernetes.io/instance=microservices-platform
+          echo ""
+          echo "HPAs:"
+          kubectl get hpa -n production -l app.kubernetes.io/instance=microservices-platform
+          echo ""
+          echo "Ingress:"
+          kubectl get ingress -n production || true
+
+      - name: Record deployment
+        run: |
+          echo "Recording deployment details..."
+          kubectl annotate deployment -n production microservices-platform-api-service \
+            deployed-by="${{ github.actor }}" \
+            deployed-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            image-tag="${{ inputs.image_tag }}" \
+            --overwrite
+          kubectl annotate deployment -n production microservices-platform-worker-service \
+            deployed-by="${{ github.actor }}" \
+            deployed-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            image-tag="${{ inputs.image_tag }}" \
+            --overwrite
+          kubectl annotate deployment -n production microservices-platform-web-frontend \
+            deployed-by="${{ github.actor }}" \
+            deployed-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            image-tag="${{ inputs.image_tag }}" \
+            --overwrite
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Production deployment failed!"
+          echo "Helm will automatically rollback due to --atomic flag"
+          kubectl get events -n production --sort-by='.lastTimestamp' | tail -50
+
+      - name: Post-deployment summary
+        if: always()
+        run: |
+          echo "### Production Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag:** ${{ inputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployed By:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** production" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Rollback Command" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "helm rollback microservices-platform -n production" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

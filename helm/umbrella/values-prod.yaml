@@ -1,0 +1,157 @@
+# Production environment overrides
+global:
+  environment: production
+  imageRegistry: ghcr.io/YOUR_ORG
+  featureFlags:
+    newUIEnabled: false
+    betaFeaturesEnabled: false
+
+# API Service - High resources with aggressive autoscaling
+api-service:
+  enabled: true
+  replicaCount: 5
+
+  image:
+    tag: "REPLACE_WITH_TAG"  # Set via deployment
+    pullPolicy: IfNotPresent
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 5
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 60
+    targetMemoryUtilizationPercentage: 70
+
+  env:
+    - name: ENVIRONMENT
+      value: "production"
+    - name: PORT
+      value: "8080"
+
+  # Production-specific affinity for high availability
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - api-service
+            topologyKey: kubernetes.io/hostname
+
+# Worker Service - High resources with aggressive autoscaling
+worker-service:
+  enabled: true
+  replicaCount: 5
+
+  image:
+    tag: "REPLACE_WITH_TAG"  # Set via deployment
+    pullPolicy: IfNotPresent
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 5
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 60
+    targetMemoryUtilizationPercentage: 70
+
+  env:
+    - name: ENVIRONMENT
+      value: "production"
+    - name: PORT
+      value: "8080"
+    - name: JOB_INTERVAL
+      value: "15"  # More frequent in production
+
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - worker-service
+            topologyKey: kubernetes.io/hostname
+
+# Web Frontend - High resources with aggressive autoscaling
+web-frontend:
+  enabled: true
+  replicaCount: 5
+
+  image:
+    tag: "REPLACE_WITH_TAG"  # Set via deployment
+    pullPolicy: IfNotPresent
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 5
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 60
+    targetMemoryUtilizationPercentage: 70
+
+  env:
+    - name: ENVIRONMENT
+      value: "production"
+    - name: PORT
+      value: "8080"
+    - name: API_SERVICE_URL
+      value: "http://microservices-platform-api-service:80"
+
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    hosts:
+      - host: platform.production.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: platform-tls
+        hosts:
+          - platform.production.example.com
+
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - web-frontend
+            topologyKey: kubernetes.io/hostname

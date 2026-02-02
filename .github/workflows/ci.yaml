@@ -1,0 +1,195 @@
+name: CI Pipeline
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository_owner }}
+
+jobs:
+  helm-lint:
+    name: Helm Lint & Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.13.0'
+
+      - name: Lint umbrella chart
+        run: |
+          helm dependency update helm/umbrella
+          helm lint helm/umbrella
+
+      - name: Lint individual service charts
+        run: |
+          for chart in helm/services/*; do
+            echo "Linting $chart"
+            helm lint $chart
+          done
+
+      - name: Validate Helm templates for dev
+        run: |
+          helm template test helm/umbrella -f helm/umbrella/values-dev.yaml > /dev/null
+          echo "Dev templates validated"
+
+      - name: Validate Helm templates for staging
+        run: |
+          helm template test helm/umbrella -f helm/umbrella/values-staging.yaml \
+            --set api-service.image.tag=test \
+            --set worker-service.image.tag=test \
+            --set web-frontend.image.tag=test > /dev/null
+          echo "Staging templates validated"
+
+      - name: Validate Helm templates for production
+        run: |
+          helm template test helm/umbrella -f helm/umbrella/values-prod.yaml \
+            --set api-service.image.tag=test \
+            --set worker-service.image.tag=test \
+            --set web-frontend.image.tag=test > /dev/null
+          echo "Production templates validated"
+
+  test-services:
+    name: Test Services
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api-service, worker-service, web-frontend]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r src/${{ matrix.service }}/requirements.txt
+
+      - name: Run tests with coverage
+        run: |
+          cd src/${{ matrix.service }}
+          pytest tests/ -v --cov=. --cov-report=term --cov-report=xml
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          files: src/${{ matrix.service }}/coverage.xml
+          flags: ${{ matrix.service }}
+          name: ${{ matrix.service }}-coverage
+
+  build-images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [helm-lint, test-services]
+    strategy:
+      matrix:
+        service: [api-service, worker-service, web-frontend]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=main-
+            type=raw,value=main-latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/${{ matrix.service }}/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build-images
+    if: github.event_name != 'pull_request'
+    strategy:
+      matrix:
+        service: [api-service, worker-service, web-frontend]
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:main-${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results-${{ matrix.service }}.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results-${{ matrix.service }}.sarif'
+
+      - name: Run Trivy for console output
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:main-${{ github.sha }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [helm-lint, test-services, build-images]
+    if: always()
+    steps:
+      - name: Check job results
+        run: |
+          if [[ "${{ needs.helm-lint.result }}" != "success" ]] || \
+             [[ "${{ needs.test-services.result }}" != "success" ]] || \
+             [[ "${{ needs.build-images.result }}" != "success" ]]; then
+            echo "CI pipeline failed"
+            exit 1
+          fi
+          echo "CI pipeline passed successfully"

@@ -1,0 +1,30 @@
+# CODEOWNERS file
+# Lines starting with '#' are comments.
+# Each line is a file pattern followed by one or more owners.
+
+# Default owners for everything in the repo
+*       @YOUR_GITHUB_ORG/platform-team
+
+# Helm charts require platform team review
+/helm/  @YOUR_GITHUB_ORG/platform-team
+
+# GitHub Actions workflows require platform team review
+/.github/workflows/  @YOUR_GITHUB_ORG/platform-team
+
+# API service owned by backend team
+/src/api-service/  @YOUR_GITHUB_ORG/backend-team
+/docker/api-service/  @YOUR_GITHUB_ORG/backend-team
+
+# Worker service owned by backend team
+/src/worker-service/  @YOUR_GITHUB_ORG/backend-team
+/docker/worker-service/  @YOUR_GITHUB_ORG/backend-team
+
+# Web frontend owned by frontend team
+/src/web-frontend/  @YOUR_GITHUB_ORG/frontend-team
+/docker/web-frontend/  @YOUR_GITHUB_ORG/frontend-team
+
+# Documentation can be updated by anyone but reviewed by platform team
+/docs/  @YOUR_GITHUB_ORG/platform-team
+
+# Scripts require platform team review
+/scripts/  @YOUR_GITHUB_ORG/platform-team

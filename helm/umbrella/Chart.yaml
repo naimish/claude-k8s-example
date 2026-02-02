@@ -1,0 +1,22 @@
+apiVersion: v2
+name: microservices-platform
+description: Umbrella Helm chart for microservices platform
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+dependencies:
+  - name: api-service
+    version: 1.0.0
+    repository: "file://../services/api-service"
+    condition: api-service.enabled
+
+  - name: worker-service
+    version: 1.0.0
+    repository: "file://../services/worker-service"
+    condition: worker-service.enabled
+
+  - name: web-frontend
+    version: 1.0.0
+    repository: "file://../services/web-frontend"
+    condition: web-frontend.enabled

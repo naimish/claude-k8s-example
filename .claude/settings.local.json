@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod:*)",
+      "Bash(tree:*)",
+      "Bash(helm lint:*)",
+      "Bash(spack env activate:*)",
+      "Bash(spack install:*)",
+      "Bash(pip install:*)",
+      "Bash(pytest:*)"
+    ]
+  }
+}
