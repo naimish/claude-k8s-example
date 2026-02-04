@@ -1,10 +1,10 @@
-name: Provision kind Cluster
+name: Provision kind Cluster (Manual)
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'Action to perform'
+        description: 'Action to perform (NOTE: cd-dev workflow auto-provisions clusters)'
         required: true
         type: choice
         options:
@@ -12,7 +12,7 @@ on:
           - delete
           - recreate
           - status
-        default: 'install'
+        default: 'status'
       cluster_name:
         description: 'Cluster name'
         required: false

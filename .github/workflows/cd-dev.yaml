@@ -26,6 +26,146 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Check if Docker is running
+        run: |
+          if ! docker info > /dev/null 2>&1; then
+            echo "Error: Docker is not running"
+            echo "Please start Docker Desktop and try again"
+            exit 1
+          fi
+          echo "Docker is running ✓"
+
+      - name: Check if kind is installed
+        id: check-kind
+        run: |
+          if command -v kind &> /dev/null; then
+            echo "installed=true" >> $GITHUB_OUTPUT
+            echo "Kind already installed: $(kind version)"
+          else
+            echo "installed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install kind
+        if: steps.check-kind.outputs.installed == 'false'
+        run: |
+          echo "Installing kind..."
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+            ARCH="arm64"
+          else
+            ARCH="amd64"
+          fi
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-darwin-${ARCH}
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          echo "kind installed: $(kind version)"
+
+      - name: Check if kubectl is installed
+        id: check-kubectl
+        run: |
+          if command -v kubectl &> /dev/null; then
+            echo "installed=true" >> $GITHUB_OUTPUT
+            echo "kubectl already installed"
+          else
+            echo "installed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install kubectl
+        if: steps.check-kubectl.outputs.installed == 'false'
+        run: |
+          echo "Installing kubectl..."
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+            ARCH="arm64"
+          else
+            ARCH="amd64"
+          fi
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/${ARCH}/kubectl"
+          chmod +x ./kubectl
+          sudo mv ./kubectl /usr/local/bin/kubectl
+          echo "kubectl installed: $(kubectl version --client --short)"
+
+      - name: Check if cluster exists
+        id: check-cluster
+        run: |
+          if kind get clusters 2>/dev/null | grep -q "^dev-cluster$"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Cluster 'dev-cluster' already exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Cluster 'dev-cluster' does not exist"
+          fi
+
+      - name: Create kind cluster
+        if: steps.check-cluster.outputs.exists == 'false'
+        run: |
+          echo "Creating kind cluster: dev-cluster"
+
+          cat <<EOF > kind-config.yaml
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+          - role: control-plane
+            extraPortMappings:
+            - containerPort: 80
+              hostPort: 8080
+              protocol: TCP
+            - containerPort: 443
+              hostPort: 8443
+              protocol: TCP
+            - containerPort: 30000
+              hostPort: 30000
+              protocol: TCP
+            - containerPort: 30001
+              hostPort: 30001
+              protocol: TCP
+            - containerPort: 30002
+              hostPort: 30002
+              protocol: TCP
+          EOF
+
+          kind create cluster --name dev-cluster --config kind-config.yaml --wait 60s
+          echo "Cluster created successfully!"
+
+      - name: Install NGINX Ingress Controller
+        if: steps.check-cluster.outputs.exists == 'false'
+        run: |
+          echo "Installing NGINX Ingress Controller..."
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+
+          echo "Waiting for ingress controller to be ready..."
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=120s
+
+          echo "NGINX Ingress Controller installed!"
+
+      - name: Create namespaces
+        if: steps.check-cluster.outputs.exists == 'false'
+        run: |
+          echo "Creating namespaces..."
+          kubectl create namespace dev --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+          echo "Namespaces created"
+
+      - name: Configure registry access
+        if: steps.check-cluster.outputs.exists == 'false'
+        run: |
+          echo "Configuring registry credentials..."
+          kubectl create secret docker-registry ghcr-secret \
+            --docker-server=ghcr.io \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GITHUB_TOKEN }} \
+            --namespace=dev \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "Registry credentials configured!"
+
+      - name: Set kubectl context
+        run: |
+          kubectl config use-context kind-dev-cluster
+          kubectl cluster-info
+
       - name: Install Helm
         run: |
           if ! command -v helm &> /dev/null; then

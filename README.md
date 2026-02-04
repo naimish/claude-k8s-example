@@ -13,19 +13,20 @@ A production-ready Kubernetes continuous deployment repository supporting multip
 
 ### Environments
 
-| Environment | Deployment | Approvals | Scaling |
-|-------------|-----------|-----------|---------|
-| **Dev** | Auto on merge to main | None | Minimal (1 replica) |
-| **Staging** | Manual promotion | 1 reviewer | Medium (2 replicas, HPA) |
-| **Production** | Manual promotion | 2 reviewers + 5min wait | High (5+ replicas, HPA) |
+| Environment | Deployment | Cluster | Approvals | Scaling |
+|-------------|-----------|---------|-----------|---------|
+| **Dev** | Auto on merge to main | kind (auto-provisioned on MacBook) | None | Minimal (1 replica) |
+| **Staging** | Manual promotion | External K8s cluster | 1 reviewer | Medium (2 replicas, HPA) |
+| **Production** | Manual promotion | External K8s cluster | 2 reviewers + 5min wait | High (5+ replicas, HPA) |
 
 ## Quick Start
 
 ### Prerequisites
-- Docker
+- Docker (Docker Desktop for macOS dev environment)
 - Helm 3.x
 - kubectl configured for your clusters
 - GitHub CLI (optional)
+- For dev environment: MacBook with self-hosted runner configured
 
 ### Local Development
 
@@ -83,6 +84,8 @@ make deploy-local
 4. Get 2 approvals + pass all checks
 5. Squash merge to `main`
 6. Automatically deploys to **dev**
+   - First deployment: Auto-provisions kind cluster on MacBook (~2-3 min)
+   - Subsequent deployments: Reuses existing cluster (faster)
 
 ### Promotion to Staging
 ```bash
@@ -182,10 +185,31 @@ Required secrets per environment:
 SLACK_WEBHOOK  # Optional: for notifications
 
 # Environment secrets
-KUBECONFIG_DEV        # Dev cluster kubeconfig (base64)
+# Dev: No secrets required (cluster auto-provisioned locally)
 KUBECONFIG_STAGING    # Staging cluster kubeconfig (base64)
 KUBECONFIG_PROD       # Production cluster kubeconfig (base64)
 ```
+
+### Dev Environment Setup
+
+Dev environment uses a self-hosted runner on MacBook Pro M1:
+
+1. **Install self-hosted runner:**
+   - Go to: Settings → Actions → Runners → New self-hosted runner
+   - Follow instructions to configure on MacBook
+   - Add labels: `self-hosted`, `dev`, `macOS`, `ARM64`
+
+2. **Prerequisites on MacBook:**
+   - Docker Desktop installed and running
+   - Ports available: 6443, 8080, 8443, 30000-30002
+   - 8GB+ RAM, 10GB+ free disk space
+
+3. **Start runner:**
+   ```bash
+   ./run.sh
+   ```
+
+The cd-dev workflow automatically handles cluster provisioning on first deployment.
 
 ## Support
 

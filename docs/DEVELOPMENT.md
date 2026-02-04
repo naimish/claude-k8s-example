@@ -119,6 +119,55 @@ Run: `docker-compose up`
 
 ### Local Kubernetes Deployment
 
+**Option 1: Automatic via cd-dev workflow (Recommended)**
+
+The cd-dev workflow automatically provisions a kind cluster on MacBook Pro M1 when deploying. This is now the preferred approach for dev environment:
+
+```bash
+# Trigger deployment via GitHub Actions
+# Go to: GitHub Actions → CD - Deploy to Dev → Run workflow
+
+# The workflow automatically:
+# 1. Checks if kind cluster exists
+# 2. Creates cluster if needed (with NGINX Ingress, namespaces, registry access)
+# 3. Deploys application
+# 4. Runs smoke tests
+```
+
+After deployment, access the cluster:
+```bash
+# Switch to the dev cluster context
+kubectl config use-context kind-dev-cluster
+
+# Verify deployment
+kubectl get pods -n dev
+kubectl get svc -n dev
+
+# Port forward to access services
+kubectl port-forward svc/microservices-platform-web-frontend 8080:80 -n dev
+kubectl port-forward svc/microservices-platform-api-service 8081:80 -n dev
+```
+
+**Option 2: Manual cluster provisioning**
+
+Use the provision workflows for manual cluster management:
+
+```bash
+# Provision kind cluster (macOS/Linux)
+# Go to: GitHub Actions → Provision Kind Cluster → Run workflow
+# Or use: make kind-create
+
+# Provision k3s cluster (Linux only)
+# Go to: GitHub Actions → Provision K3s Cluster → Run workflow
+```
+
+These workflows remain useful for:
+- Recreating the cluster from scratch
+- Checking cluster status
+- Manual setup and testing
+
+**Option 3: Local Docker Desktop Kubernetes**
+
 ```bash
 # Enable Kubernetes in Docker Desktop
 # Or start Minikube: minikube start
@@ -138,6 +187,12 @@ kubectl port-forward svc/microservices-platform-api-service 8081:80 -n dev
 Access services:
 - Web Frontend: http://localhost:8080
 - API Service: http://localhost:8081
+
+**Notes:**
+- The cd-dev workflow provisions kind clusters (not k3s)
+- The kind cluster persists between deployments (not recreated each time)
+- To recreate: `kind delete cluster --name dev-cluster` then re-run workflow
+- First deployment takes ~2-3 minutes (cluster provisioning), subsequent deploys are faster
 
 ## Testing
 

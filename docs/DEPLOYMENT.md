@@ -17,8 +17,20 @@ This guide covers deployment procedures, troubleshooting, and operational tasks 
 
 - Helm 3.x
 - kubectl 1.28+
-- Access to Kubernetes clusters (dev, staging, production)
+- Access to Kubernetes clusters (staging, production)
 - GitHub CLI (optional, for workflow management)
+
+### Dev Environment Requirements
+
+The dev environment uses a self-hosted GitHub Actions runner on a MacBook Pro M1:
+
+- **Docker Desktop** installed and running
+- **Self-hosted runner** configured with labels: `[self-hosted, dev]`
+- **Ports available**: 6443, 8080, 8443, 30000-30002
+- **Minimum resources**: 8GB+ RAM, 10GB+ free disk space
+- **Network access** to ghcr.io (GitHub Container Registry)
+
+The cd-dev workflow automatically provisions a kind cluster on first run and reuses it for subsequent deployments.
 
 ### Required Secrets
 
@@ -30,7 +42,8 @@ Configure these secrets in GitHub repository settings:
 #### Environment Secrets
 
 **Dev Environment:**
-- `KUBECONFIG_DEV` - Base64-encoded kubeconfig for dev cluster
+- No secrets required - cluster is auto-provisioned locally via self-hosted runner
+- `GITHUB_TOKEN` (automatically provided) - Used for container registry access
 
 **Staging Environment:**
 - `KUBECONFIG_STAGING` - Base64-encoded kubeconfig for staging cluster
@@ -84,20 +97,57 @@ Configure for `main` branch:
 
 ### Automatic Deployment to Dev
 
-Dev deployments happen automatically when code is merged to `main`:
+Dev deployments happen automatically when code is merged to `main`. The workflow runs on a self-hosted runner (MacBook Pro M1) and automatically provisions a kind cluster on first run.
+
+**How it works:**
 
 1. Create feature branch
 2. Make changes
 3. Open PR
 4. Get 2 approvals
-5. Merge to main → automatic deploy to dev
+5. Merge to main → CI pipeline runs
+6. On CI success → cd-dev workflow auto-triggers:
+   - Checks if Docker is running
+   - Installs kind and kubectl if not present
+   - Checks if dev-cluster exists
+   - **First run**: Creates kind cluster with NGINX Ingress, namespaces, and registry credentials (~2-3 minutes)
+   - **Subsequent runs**: Reuses existing cluster (faster)
+   - Deploys application to dev namespace
+   - Runs smoke tests
 
-Monitor deployment:
+**First-time setup:**
+
+The first deployment takes longer due to cluster provisioning. The workflow will:
+- Create a kind cluster named `dev-cluster`
+- Install NGINX Ingress Controller
+- Create namespaces (`dev`, `monitoring`)
+- Configure GitHub Container Registry access
+- Deploy the application
+
+**Cluster persistence:**
+
+The kind cluster persists between deployments. To recreate the cluster:
+```bash
+# On the MacBook where the runner is hosted
+kind delete cluster --name dev-cluster
+# Next deployment will recreate it
+```
+
+**Monitor deployment:**
 ```bash
 # Via GitHub Actions UI
-# Or watch pods directly:
+# Or watch pods directly (on MacBook):
+kubectl config use-context kind-dev-cluster
 kubectl get pods -n dev -l app.kubernetes.io/instance=microservices-platform -w
 ```
+
+**Manual deployment:**
+
+You can also trigger the workflow manually:
+- Go to GitHub Actions → CD - Deploy to Dev
+- Click "Run workflow"
+- Select branch (usually `main`)
+- Click "Run workflow"
 
 ### Manual Deployment to Staging
 
